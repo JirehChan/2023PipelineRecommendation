@@ -120,14 +120,14 @@ from sklearn import preprocessing
 class NNClassifier(nn.Module):
     def __init__(self, input_dim=10, hidden_dim=10, output_dim=3):
         super(NNClassifier, self).__init__()
-        self.bn1 = nn.BatchNorm1d(input_dim)
+        #self.bn1 = nn.BatchNorm1d(input_dim)
         #self.nn1 = nn.Linear(input_dim, 2*hidden_dim)
         #self.nn2 = nn.Linear(2*hidden_dim, hidden_dim)
         self.nn1 = nn.Linear(input_dim, 2*hidden_dim)
         self.pred = nn.Linear(2*hidden_dim, output_dim)
     
     def forward(self, x):
-        x = self.bn1(x)
+        #x = self.bn1(x)
         x = self.nn1(x)
         x = F.relu(x)
 
@@ -325,7 +325,7 @@ class LamNet(nn.Module):
     #x = self.dropout(x)
 
     out = self.pred(x)
-    return out
+    return torch.sigmoid(out)*100
 
 # Siamese Network
 class SiameseNet(nn.Module):
@@ -375,10 +375,12 @@ class ContrastiveLoss(nn.Module):
   def forward(self, out, target, size_average=True):
     out1, out2 = out
     distance = lam_distance(out1, out2)
+    #losses = 0.5 * ((1 - target).float()*torch.pow(distance, 2) + 
+    #                target.float() * torch.pow(F.relu(self.margin - (distance + self.eps)), 2))
     losses = 0.5 * ((1 - target).float()*distance + 
                     target.float() * F.relu(self.margin - (distance + self.eps)))
     
-    return losses.mean() if size_average else loss.num()
+    return losses.mean() if size_average else losses.num()
 
 
 # LamDataset
@@ -426,7 +428,7 @@ class PmmRecommender:
         my_lamNet = LamNet(n_input=self.kwargs['input_dim'], n_hidden=self.kwargs['hidden_dim'], n_output=self.kwargs['output_dim'])
         my_model = SiameseNet(my_lamNet)
         my_optimizer = torch.optim.SGD(my_model.parameters(), lr=self.kwargs['lr'], momentum=0.9, weight_decay=0.0001)
-        my_criterion = ContrastiveLoss()
+        my_criterion = ContrastiveLoss(self.kwargs['margin'])
         
         # Train Model
         self.model, lam_train_acc, lam_val_acc, lam_test_acc, lam_epoch = \
@@ -471,7 +473,7 @@ class PmmRecommender:
 
         return (-ix_init).argsort(), ix_init
     
-    def _create_pairs(self, Ytrain, Ftrain, FPipeline, total_pairs=0, pair_split=[0,0], rank_split=[1, 1]):
+    def _create_pairs(self, Ytrain, Ftrain, FPipeline, total_pairs=0, pair_split=[0,0], rank_split=[1, 1], random_sample=1):
         '''
         Ytrain: (Npipeline, Ndataset)
         Ftrain: (Ndataset, Ndatasetfeats)
@@ -481,7 +483,7 @@ class PmmRecommender:
         if total_pairs==0:
             return self._create_pairs_full(Ytrain, Ftrain, FPipeline)
         elif total_pairs==-1:
-            return self._create_pairs_all(Ytrain, Ftrain, FPipeline, pair_split, rank_split)
+            return self._create_pairs_all(Ytrain, Ftrain, FPipeline, pair_split, rank_split, random_sample)
 
         pairNum = 0
         pipelineNum = Ytrain.shape[0]
@@ -580,7 +582,7 @@ class PmmRecommender:
 
         return pairs1, pairs2, labels
     
-    def _create_pairs_all(self, Ytrain, Ftrain, FPipeline, pair_split, rank_split):
+    def _create_pairs_all(self, Ytrain, Ftrain, FPipeline, pair_split, rank_split, random_sample=1):
         '''
         Ytrain: (Npipeline, Ndataset)
         Ftrain: (Ndataset, Ndatasetfeats)
@@ -594,10 +596,15 @@ class PmmRecommender:
         pairs1 = []
         pairs2 = []
         labels = []
-
+        
         for datIndex1 in range(datasetNum):
-            for pipeIndex1 in range(pipelineNum):
+            if random_sample == 1:
+                pipe_range = range(pipelineNum)
+            else:
+                pipe_range = np.random.randint(0,pipelineNum,size=int(pipelineNum*random_sample))
 
+            for pipeIndex1 in pipe_range:
+                
                 y1 = Ytrain[pipeIndex1, datIndex1]
                 if np.isnan(y1):
                     continue
@@ -713,12 +720,23 @@ class PmmRecommender:
 
         # Train Lam Model
         best_loss  = 1000000000
+        train_losses = []
+        val_losses = []
         best_acc   = 0
         best_epoch = 0
+
+        train_loss, train_acc = test_func(train_iter)
+        val_loss, val_acc   = test_func(val_iter)
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
 
         for epoch in range(n_epoch):
             train_loss, train_acc = train_func(train_iter)
             val_loss, val_acc   = test_func(val_iter)
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+
+            #print(train_loss)
 
             if best_acc < val_acc:
                 torch.save(my_model, save_path)
@@ -742,7 +760,7 @@ class PmmRecommender:
             print('Result: {:.2f}% | {:.2f}% | {:.2f}% (epoch={})'.format(train_acc, val_acc, test_acc, best_epoch))
             train_val_acc = (len(train_iter)*train_acc + len(val_iter)*val_acc) / (len(train_iter) + len(val_iter))
         
-        return torch.load(save_path), train_acc, val_acc, test_acc, best_epoch
+        return torch.load(save_path), train_acc, val_acc, test_acc, best_epoch, train_losses, val_losses
 
 
 
@@ -761,10 +779,10 @@ class LamNetSeperate(nn.Module):
     self.hidden1 = nn.Linear(2*n_hidden, n_hidden)
     self.pred = nn.Linear(n_hidden, n_output)
 
-    self.bn1 = nn.BatchNorm1d(n_input1+n_input2)
+    #self.bn1 = nn.BatchNorm1d(n_input1+n_input2)
 
   def forward(self, x):
-    x = self.bn1(x)
+    #x = self.bn1(x)
     x1 = x[:,:self.n_input1]
     x2 = x[:,self.n_input1:]
     #x1, x2 = x.split(self.n_input1, dim=1)
@@ -779,7 +797,7 @@ class LamNetSeperate(nn.Module):
     x = F.relu(x)
 
     out = self.pred(x)
-    return out
+    return torch.sigmoid(out)*100#out
 
 
 class BalancedPmmRecommender(PmmRecommender):
@@ -789,10 +807,11 @@ class BalancedPmmRecommender(PmmRecommender):
 
     def train(self, Ytrain, Ftrain, FPipeline):
         self.FPipeline = FPipeline
-
+        
         # create lam pairs
         pairs1, pairs2, labels = self._create_pairs(Ytrain, Ftrain, FPipeline, self.kwargs['total_pairs'], 
-                                [self.kwargs['pair_sd'], self.kwargs['pair_sp']], [self.kwargs['rank_s1'], self.kwargs['rank_s2']])
+                                [self.kwargs['pair_sd'], self.kwargs['pair_sp']], [self.kwargs['rank_s1'], self.kwargs['rank_s2']],
+                                self.kwargs['random_sample'])
         
         # get dataloader
         train_data, val_data, test_data = self._split_lam_datasets(pairs1, pairs2, labels, part_ratio=0.8, val_ratio=0.2)
@@ -812,10 +831,10 @@ class BalancedPmmRecommender(PmmRecommender):
                         n_output=self.kwargs['output_dim'])
         my_model = SiameseNet(my_lamNet)
         my_optimizer = torch.optim.SGD(my_model.parameters(), lr=self.kwargs['lr'], momentum=0.9, weight_decay=0.0001)
-        my_criterion = ContrastiveLoss()
+        my_criterion = ContrastiveLoss(self.kwargs['margin'])
         
         # Train Model
-        self.model, lam_train_acc, lam_val_acc, lam_test_acc, lam_epoch = \
+        self.model, lam_train_acc, lam_val_acc, lam_test_acc, lam_epoch, train_losses, val_losses = \
             self._train_lam_model(train_iter, val_iter, test_iter, \
                 my_model, my_optimizer, my_criterion, \
                 n_epoch=self.kwargs['n_epoch'], batch_size=self.kwargs['batch_size'], \
@@ -834,6 +853,8 @@ class BalancedPmmRecommender(PmmRecommender):
         print("train: {:.2f}%, val: {:.2f}%".format(\
             self.model.evaluate(x_train, y_train, FPipeline),
             self.model.evaluate(x_val, y_val, FPipeline)))
+        
+        return train_losses, val_losses
 
 
 

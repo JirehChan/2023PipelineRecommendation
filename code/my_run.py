@@ -13,7 +13,8 @@ import my_recommends as mr
 import my_tool as mt
 from sklearn.metrics import ndcg_score
 from tqdm import tqdm
-import multiprocessing
+from collections import Counter
+import pickle
 
 torch.set_default_tensor_type(torch.FloatTensor)
 '''
@@ -54,7 +55,7 @@ def train(m, optimizer, f_callback=None, f_stop=None):
     return m
 
 def test_warmstarter(bo_n_init, Yt, Ft, do_print=False, warm_start='l1', 
-    warm_starter=None):
+    warm_starter=None, is_narrow=0, narrow_list=None):
 
     # warm start
     ix_init = warm_starter.recommend(Ft)
@@ -66,15 +67,19 @@ def test_warmstarter(bo_n_init, Yt, Ft, do_print=False, warm_start='l1',
 
         for i in ixs:
             if not np.isnan(y_train[i]):
+                if (is_narrow) and (i not in narrow_list):
+                    continue
                 accs[ind][n_init] = y_train[i]
                 n_init += 1
                 if n_init>=bo_n_init:
                     break
-    return accs
+
+    return accs, ix_init
 
 
 def bo_search(m, bo_n_init, bo_n_iters, Ytrain, Ftrain, ftest, ytest,
-              do_print=False, warm_start='l1', warm_starter=None, pipeline_ixs=None, topk=[1], ndcgk=[None]):
+              do_print=False, warm_start='l1', warm_starter=None, pipeline_ixs=None,
+              is_narrow=0, narrow_list=None):
     """
     initializes BO with L1 warm-start (using dataset features). returns a
     numpy array of length bo_n_iters holding the best performance attained
@@ -89,32 +94,12 @@ def bo_search(m, bo_n_init, bo_n_iters, Ytrain, Ftrain, ftest, ytest,
     ix_evaled = []
     ix_candidates = np.where(np.invert(np.isnan(ytest)))[0].tolist()
     ybest_list = []
-    ndcg_list = []
-    topk_list = []
 
     # warm start
     ix_init = warm_starter.recommend(ftest)
     n_init = 0
-
-    best_ix = ftest.argmax()
-    for top_k in topk:
-        if best_ix in ix_init[:top_k]:
-            topk_list.append(True)
-        else:
-            topk_list.append(False)
-    
-    ix_to_rank = []
-    for i in ix_init:
-        if i in ix_candidates:
-            ix_to_rank.append(i)
-    ix_to_rank = np.array(ix_to_rank)#np.intersect1d(ix_init, ix_candidates)
-
-    for ndcg_k in ndcgk:
-        if len(ix_to_rank)<2:
-            score=0
-        else:
-            score = ndcg_score([ytest[ix_to_rank]], [np.flipud(ix_to_rank)], k=ndcg_k)
-        ndcg_list.append(score)
+    if is_narrow:
+        ix_init = [i for i in ix_init if i in narrow_list]
     
     for ix in ix_init:
         if not np.isnan(ytest[ix]):
@@ -175,39 +160,23 @@ def bo_search(m, bo_n_init, bo_n_iters, Ytrain, Ftrain, ftest, ytest,
             print('Iter: %d, %g [%d], Best: %g' \
                                     % (l, ytest[ix], ix, preds.ybest))
 
-    return np.asarray(ybest_list), ix_evaled, ndcg_list, topk_list
+    return np.asarray(ybest_list), ix_evaled
 
 def bowarm_search(m, bo_n_init, bo_n_iters, Ytrain, Ftrain, ftest, ytest,
-              do_print=False, warm_start='l1', warm_starter=None, pipeline_ixs=None, topk=[1], ndcgk=[None]):
+              do_print=False, warm_start='l1', warm_starter=None, pipeline_ixs=None,
+              is_narrow=0, narrow_list=None):
 
     preds = bo.BOwarm(m.dim, m.kernel, bo.ei_warm,
                   variance=transform_forward(m.variance))
     ix_evaled = []
     ix_candidates = np.where(np.invert(np.isnan(ytest)))[0].tolist()
     ybest_list = []
-    ndcg_list = []
-    topk_list = []
 
     # warm start
     ix_init, init_score = warm_starter.recommend_with_score(ftest)
     n_init = 0
-
-    best_ix = ftest.argmax()
-    for top_k in topk:
-        if best_ix in ix_init[:top_k]:
-            topk_list.append(True)
-        else:
-            topk_list.append(False)
-    
-    ix_to_rank = []
-    for i in ix_init:
-        if i in ix_candidates:
-            ix_to_rank.append(i)
-    ix_to_rank = np.array(ix_to_rank)#np.intersect1d(ix_init, ix_candidates)
-
-    for ndcg_k in ndcgk:
-        score = ndcg_score([ytest[ix_to_rank]], [np.flipud(ix_to_rank)], k=ndcg_k)
-        ndcg_list.append(score)
+    if is_narrow:
+        ix_init = [i for i in ix_init if i in narrow_list]
     
     for ix in ix_init:
         if not np.isnan(ytest[ix]):
@@ -244,10 +213,11 @@ def bowarm_search(m, bo_n_init, bo_n_iters, Ytrain, Ftrain, ftest, ytest,
             print('Iter: %d, %g [%d], Best: %g' \
                                     % (l, ytest[ix], ix, preds.ybest))
 
-    return np.asarray(ybest_list), ix_evaled, ndcg_list, topk_list
+    return np.asarray(ybest_list), ix_evaled
 
 
-def random_search(bo_n_iters, ytest, speed=1, do_print=False, pipeline_ixs=None, ndcgk=[None]):
+def random_search(bo_n_iters, ytest, speed=1, do_print=False, pipeline_ixs=None, ndcgk=[None],
+              is_narrow=0, narrow_list=None):
     """
     speed denotes how many random queries are performed per iteration.
     """
@@ -258,34 +228,43 @@ def random_search(bo_n_iters, ytest, speed=1, do_print=False, pipeline_ixs=None,
     ndcg_list = []
 
     ybest = np.nan
+    n_init = 0
 
     for l in range(bo_n_iters):
         for ll in range(speed):
             if len(ix_candidates)==0:
                 ix_evaled.append(-1)
                 continue
+
             random_rank = np.random.permutation(len(ix_candidates))
-            if l==0 and ll==0:
-                for ndcg_k in ndcgk:
-                    ndcg_list.append(ndcg_score([ytest[ix_candidates]], [np.flipud(random_rank)], k=ndcg_k))
 
-            ix = ix_candidates[random_rank[0]]
-            
-            if np.isnan(ybest):
-                ybest = ytest[ix]
+            if is_narrow and n_init<5:
+                random_rank = [i for i in random_rank if random_rank[i] in narrow_list]
+                ix = ix_candidates[random_rank[0]]
+                if not np.isnan(ybest):
+                    if ytest[ix] > ybest:
+                        ybest = ytest[ix]
+                    ix_evaled.append(ix)
+                    ix_candidates.remove(ix)
+                    n_init+=1
             else:
-                if ytest[ix] > ybest:
+                ix = ix_candidates[random_rank[0]]
+                
+                if np.isnan(ybest):
                     ybest = ytest[ix]
+                else:
+                    if ytest[ix] > ybest:
+                        ybest = ytest[ix]
 
-            ix_evaled.append(ix)
-            ix_candidates.remove(ix)
+                ix_evaled.append(ix)
+                ix_candidates.remove(ix)
 
         ybest_list.append(ybest)
 
         if do_print:
             print('Iter: %d, %g [%d], Best: %g' % (l, ytest[ix], ix, ybest))
 
-    return np.asarray(ybest_list), ix_evaled, ndcg_list
+    return np.asarray(ybest_list), ix_evaled
 
 if __name__=='__main__':
     import warnings 
@@ -322,10 +301,17 @@ if __name__=='__main__':
     val_accs = {}
     test_accs = {}
 
+    ix_train = {}
+    ix_val = {}
+    ix_test = {}
+
     '''train'''
     # load dataset
     Ytrain, Yval, Ytest, Ftrain, Fval, Ftest, FtrainNorm, FvalNorm, FtestNorm, FPipeline = \
-        mt.get_data(args.dataset_name, pipeline_ixs, args.save_name, args.nan_ratio)
+        mt.get_data(args.dataset_name, pipeline_ixs, args.save_name, args.nan_ratio, args.model_path, args.random_seed)
+    narrow_pipeline = None
+    if args.is_narrow:
+        narrow_pipeline = list(Counter(np.nanargmax(Ytrain,axis=0)).keys())
     
     maxiter = int(Ytrain.shape[1]/batch_size*n_epochs)
 
@@ -385,125 +371,56 @@ if __name__=='__main__':
     f = open('../result/{}/warm_starters-{}.txt'.format(args.warm_start, args.part_name), 'r')
     exec(f.read())
 
-    for k in warm_starters.keys():
+    warm_train_losses = {}
+    warm_val_losses = {}
 
-        print('- {:10}:'.format(k))
-        if k[:2]=='nn':
-            if pipeline_ixs is not None:
-                warm_starters[k].train(Ytrain, FtrainNorm)
+    if args.warm_trained:
+        for k in warm_starters.keys():
+            warm_starters[k].FPipeline = FPipeline
+            warm_starters[k].model = torch.load(warm_starters[k].kwargs['save_path'])
+    else:
+        for k in warm_starters.keys():
+            mt.setup_seed(args.random_seed)
+
+            print('- {:10}:'.format(k))
+            if k[:2]=='nn':
+                if pipeline_ixs is not None:
+                    warm_starters[k].train(Ytrain, FtrainNorm)
+                else:
+                    warm_starters[k].train(Ytrain, FtrainNorm)
+            elif k[:3]=='pmm' or k[:3]=='reg':
+                if pipeline_ixs is not None:
+                    warm_starters[k].train(Ytrain, FtrainNorm, FPipeline)
+                else:
+                    warm_starters[k].train(Ytrain, FtrainNorm, FPipeline)
+            elif k[:4]=='bpmm':
+                warm_train_losses[k], warm_val_losses[k] = warm_starters[k].train(Ytrain, FtrainNorm, FPipeline)
             else:
-                warm_starters[k].train(Ytrain, FtrainNorm)
-        elif k[:3]=='pmm' or k[:4]=='bpmm' or k[:3]=='reg':
-            if pipeline_ixs is not None:
-                warm_starters[k].train(Ytrain, FtrainNorm, FPipeline)
-            else:
-                warm_starters[k].train(Ytrain, FtrainNorm, FPipeline)
-        else:
-            if pipeline_ixs is not None:
-                warm_starters[k].train(Ytrain, FtrainNorm)#Ftrain)
-            else:
-                warm_starters[k].train(Ytrain, FtrainNorm)#Ftrain)
+                if pipeline_ixs is not None:
+                    warm_starters[k].train(Ytrain, FtrainNorm)#Ftrain)
+                else:
+                    warm_starters[k].train(Ytrain, FtrainNorm)#Ftrain)
     
     '''Test warm start'''
     for k in warm_starters.keys():
-        train_accs[k] = test_warmstarter(args.bo_n_init, Ytrain, FtrainNorm, 
+        train_accs[k], ix_train[k] = test_warmstarter(args.bo_n_init, Ytrain, FtrainNorm, 
                         do_print=False, warm_start=k,
-                        warm_starter=warm_starters[k])
+                        warm_starter=warm_starters[k],
+                        is_narrow=args.is_narrow, narrow_list=narrow_pipeline)
 
-        val_accs[k] = test_warmstarter(args.bo_n_init, Yval, FvalNorm, 
+        val_accs[k], ix_val[k] = test_warmstarter(args.bo_n_init, Yval, FvalNorm, 
                         do_print=False, warm_start=k,
-                        warm_starter=warm_starters[k])
+                        warm_starter=warm_starters[k],
+                        is_narrow=args.is_narrow, narrow_list=narrow_pipeline)
         
-
-    '''Evaluate'''
-    regrets_list = {}
-    evaled_list = {}
-    ndcg_list = {}
-    topk_list = {}
-
-    for k in ['random1x', 'random2x', 'random4x']+list(warm_starters.keys()):
-        regrets_list[k] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
-        test_accs[k] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
-        evaled_list[k] = []
-        ndcg_list[k] = []
-        topk_list[k] = [] 
-
-        if k[:3]=='pmm' or k[:4]=='bpmm':
-            regrets_list[k+'(warm)'] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
-            test_accs[k+'(warm)'] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
-            evaled_list[k+'(warm)'] = []
-            ndcg_list[k+'(warm)'] = []
-            topk_list[k+'(warm)'] = []
-            
-            #regrets_list[k+'(bo-warm)'] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
-            #evaled_list[k+'(bo-warm)'] = []
-            #ndcg_list[k+'(bo-warm)'] = []
-            #topk_list[k+'(bo-warm)'] = []
-
-    print('evaluating...')
-    topk = [1, 5, 10, 20, 50]
-    ndcgk = [None, 5, 10, 20]
-
-    with torch.no_grad():
-        Ytest = Ytest.astype(np.float32)
-
-        for d in tqdm(np.arange(Ytest.shape[1])):
-            ybest = np.nanmax(Ytest[:,d])
-            
-            for k in tqdm(['random1x', 'random2x', 'random4x']+list(warm_starters.keys()), leave=False):
-                topks = None
-                if k[:6]=='random':
-                    regrets, ix_evaled, ndcgs = random_search(
-                        args.bo_n_iters, Ytest[:,d], speed=int(k[6]),
-                        pipeline_ixs=pipeline_ixs, ndcgk=ndcgk)
-                elif k[:2]=='nn' or k[:3]=='pmm' or k[:4]=='bpmm':
-                    regrets, ix_evaled, ndcgs, topks = bo_search(m, args.bo_n_init, args.bo_n_iters,
-                                                    Ytrain, FtrainNorm, FtestNorm[d,:],
-                                                    Ytest[:,d], warm_start=k,
-                                                    warm_starter=warm_starters[k],
-                                                    pipeline_ixs=pipeline_ixs, topk=topk, ndcgk=ndcgk)
-                else:  
-                    regrets, ix_evaled, ndcgs, topks = bo_search(m, args.bo_n_init, args.bo_n_iters,
-                                                    Ytrain, FtrainNorm, Ftest[d,:],
-                                                    Ytest[:,d], warm_start=k,
-                                                    warm_starter=warm_starters[k],
-                                                    pipeline_ixs=pipeline_ixs, topk=topk, ndcgk=ndcgk)
-
-                test_accs[k][:,d] = regrets
-                regrets_list[k][:,d] = ybest - regrets
-                evaled_list[k].append(ix_evaled)
-                ndcg_list[k].append(ndcgs)
-                topk_list[k].append(topks)
-            
-            for k in tqdm(['random1x', 'random2x', 'random4x']+list(warm_starters.keys()), leave=False):
-                if k[:3]=='pmm' or k[:4]=='bpmm':
-
-                    '''
-                    regrets, ix_evaled, ndcgs, topks = bowarm_search(m, args.bo_n_init, args.bo_n_iters,
-                                                    Ytrain, Ftrain, FtestNorm[d,:],
-                                                    Ytest[:,d], warm_start=k,
-                                                    warm_starter=warm_starters[k],
-                                                    pipeline_ixs=pipeline_ixs, topk=topk, ndcgk=ndcgk)
-                
-                    regrets_list[k+'(bo-warm)'][:,d] = ybest - regrets
-                    evaled_list[k+'(bo-warm)'].append(ix_evaled)
-                    ndcg_list[k+'(bo-warm)'].append(ndcgs)
-                    topk_list[k+'(bo-warm)'].append(topks)
-                    '''
-                    
-                    regrets, ix_evaled, ndcgs, topks = bo_search(m, args.bo_n_iters, args.bo_n_iters,
-                                                    Ytrain, FtrainNorm, FtestNorm[d,:],
-                                                    Ytest[:,d], warm_start=k,
-                                                    warm_starter=warm_starters[k],
-                                                    pipeline_ixs=pipeline_ixs, topk=topk, ndcgk=ndcgk)
-                
-                    test_accs[k+'(warm)'][:,d] = regrets
-                    regrets_list[k+'(warm)'][:,d] = ybest - regrets
-                    evaled_list[k+'(warm)'].append(ix_evaled)
-                    ndcg_list[k+'(warm)'].append(ndcgs)
-                    topk_list[k+'(warm)'].append(topks)
+        test_accs[k], ix_test[k] = test_warmstarter(args.bo_n_init, Ytest, FtestNorm, 
+                        do_print=False, warm_start=k,
+                        warm_starter=warm_starters[k],
+                        is_narrow=args.is_narrow, narrow_list=narrow_pipeline)
+    
+    
+    if not args.is_bayes:
         
-        import pickle
         f = open('../result/{}/trainaccs-{}.pkl'.format(args.save_name, args.part_name),'wb')
         pickle.dump(train_accs,f)
         f.close()
@@ -512,25 +429,177 @@ if __name__=='__main__':
         pickle.dump(val_accs,f)
         f.close() 
 
+        f = open('../result/{}/warm_train_losses-{}.pkl'.format(args.save_name, args.part_name),'wb')
+        pickle.dump(warm_train_losses,f)
+        f.close() 
+
+        f = open('../result/{}/warm_val_losses-{}.pkl'.format(args.save_name, args.part_name),'wb')
+        pickle.dump(warm_val_losses,f)
+        f.close() 
+        
         f = open('../result/{}/testaccs-{}.pkl'.format(args.save_name, args.part_name),'wb')
         pickle.dump(test_accs,f)
         f.close() 
 
-        f = open('../result/{}/regrets-{}.pkl'.format(args.save_name, args.part_name),'wb')
-        pickle.dump(regrets_list,f)
+        f = open('../result/{}/ix_train-{}.pkl'.format(args.save_name, args.part_name),'wb')
+        pickle.dump(ix_train,f)
+        f.close() 
+
+        f = open('../result/{}/ix_val-{}.pkl'.format(args.save_name, args.part_name),'wb')
+        pickle.dump(ix_val,f)
+        f.close() 
+
+        f = open('../result/{}/ix_test-{}.pkl'.format(args.save_name, args.part_name),'wb')
+        pickle.dump(ix_test,f)
+        f.close() 
+
+        f = open('../result/{}/narrow_pipeline.pkl'.format(args.save_name, args.part_name),'wb')
+        pickle.dump(narrow_pipeline,f)
         f.close()
 
-        f = open('../result/{}/evaled-{}.pkl'.format(args.save_name, args.part_name),'wb')
-        pickle.dump(evaled_list, f)
-        f.close()
+    else:
 
-        f = open('../result/{}/ndcgs-{}.pkl'.format(args.save_name, args.part_name),'wb')
-        pickle.dump(ndcg_list,f)
-        f.close()
+        '''Evaluate'''
+        regrets_list = {}
+        evaled_list = {}
+        ndcg_list = {}
+        topk_list = {}
 
-        f = open('../result/{}/topks-{}.pkl'.format(args.save_name, args.part_name),'wb')
-        pickle.dump(topk_list,f)
-        f.close()
+        for k in ['random1x', 'random2x', 'random4x']+list(warm_starters.keys()):
+            regrets_list[k] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
+            test_accs[k] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
+            evaled_list[k] = []
+            ndcg_list[k] = []
+            topk_list[k] = [] 
+
+            if k[:3]=='pmm' or k[:4]=='bpmm':
+                regrets_list[k+'(warm)'] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
+                test_accs[k+'(warm)'] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
+                evaled_list[k+'(warm)'] = []
+                ndcg_list[k+'(warm)'] = []
+                topk_list[k+'(warm)'] = []
+                
+                #regrets_list[k+'(bo-warm)'] = np.zeros((args.bo_n_iters, Ytest.shape[1]))
+                #evaled_list[k+'(bo-warm)'] = []
+                #ndcg_list[k+'(bo-warm)'] = []
+                #topk_list[k+'(bo-warm)'] = []
+
+        print('evaluating...')
+        topk = [1, 5, 10, 20, 50]
+        ndcgk = [None, 5, 10, 20]
+
+        with torch.no_grad():
+            Ytest = Ytest.astype(np.float32)
+
+            for d in tqdm(np.arange(Ytest.shape[1])):
+                ybest = np.nanmax(Ytest[:,d])
+                
+                for k in tqdm(['random1x', 'random2x', 'random4x']+list(warm_starters.keys()), leave=False):
+                    topks = None
+                    if k[:6]=='random':
+                        regrets, ix_evaled = random_search(
+                            args.bo_n_iters, Ytest[:,d], speed=int(k[6]),
+                            pipeline_ixs=pipeline_ixs, is_narrow=args.is_narrow,
+                            narrow_list=narrow_pipeline)
+                    elif k[:2]=='nn' or k[:3]=='pmm' or k[:4]=='bpmm':
+                        regrets, ix_evaled = bo_search(m, args.bo_n_init, args.bo_n_iters,
+                                                        Ytrain, FtrainNorm, FtestNorm[d,:],
+                                                        Ytest[:,d], warm_start=k,
+                                                        warm_starter=warm_starters[k],
+                                                        pipeline_ixs=pipeline_ixs, is_narrow=args.is_narrow,
+                                                        narrow_list=narrow_pipeline)
+                    else:  
+                        regrets, ix_evaled = bo_search(m, args.bo_n_init, args.bo_n_iters,
+                                                        Ytrain, FtrainNorm, Ftest[d,:],
+                                                        Ytest[:,d], warm_start=k,
+                                                        warm_starter=warm_starters[k],
+                                                        pipeline_ixs=pipeline_ixs, is_narrow=args.is_narrow,
+                                                        narrow_list=narrow_pipeline)
+
+                    test_accs[k][:,d] = regrets
+                    regrets_list[k][:,d] = ybest - regrets
+                    evaled_list[k].append(ix_evaled)
+                    #ndcg_list[k].append(ndcgs)
+                    #topk_list[k].append(topks)
+                
+                for k in tqdm(['random1x', 'random2x', 'random4x']+list(warm_starters.keys()), leave=False):
+                    if k[:3]=='pmm' or k[:4]=='bpmm':
+
+                        '''
+                        regrets, ix_evaled, ndcgs, topks = bowarm_search(m, args.bo_n_init, args.bo_n_iters,
+                                                        Ytrain, Ftrain, FtestNorm[d,:],
+                                                        Ytest[:,d], warm_start=k,
+                                                        warm_starter=warm_starters[k],
+                                                        pipeline_ixs=pipeline_ixs, topk=topk, ndcgk=ndcgk)
+                    
+                        regrets_list[k+'(bo-warm)'][:,d] = ybest - regrets
+                        evaled_list[k+'(bo-warm)'].append(ix_evaled)
+                        ndcg_list[k+'(bo-warm)'].append(ndcgs)
+                        topk_list[k+'(bo-warm)'].append(topks)
+                        '''
+                        
+                        regrets, ix_evaled = bo_search(m, args.bo_n_iters, args.bo_n_iters,
+                                                        Ytrain, FtrainNorm, FtestNorm[d,:],
+                                                        Ytest[:,d], warm_start=k,
+                                                        warm_starter=warm_starters[k],
+                                                        pipeline_ixs=pipeline_ixs, is_narrow=args.is_narrow,
+                                                        narrow_list=narrow_pipeline)
+                    
+                        test_accs[k+'(warm)'][:,d] = regrets
+                        regrets_list[k+'(warm)'][:,d] = ybest - regrets
+                        evaled_list[k+'(warm)'].append(ix_evaled)
+            
+        
+            f = open('../result/{}/trainaccs-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(train_accs,f)
+            f.close()
+
+            f = open('../result/{}/valaccs-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(val_accs,f)
+            f.close() 
+
+            f = open('../result/{}/warm_train_losses-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(warm_train_losses,f)
+            f.close() 
+
+            f = open('../result/{}/warm_val_losses-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(warm_val_losses,f)
+            f.close() 
+            
+            f = open('../result/{}/testaccs-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(test_accs,f)
+            f.close() 
+
+            f = open('../result/{}/regrets-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(regrets_list,f)
+            f.close()
+            
+            f = open('../result/{}/evaled-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(evaled_list, f)
+            f.close()
+
+            '''
+            f = open('../result/{}/ndcgs-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(ndcg_list,f)
+            f.close()
+
+            f = open('../result/{}/topks-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(topk_list,f)
+            f.close()
+            '''
+            f = open('../result/{}/ix_train-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(ix_train,f)
+            f.close() 
+
+            f = open('../result/{}/ix_val-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(ix_val,f)
+            f.close() 
+
+            f = open('../result/{}/ix_test-{}.pkl'.format(args.save_name, args.part_name),'wb')
+            pickle.dump(ix_test,f)
+            f.close() 
+
+
 
         
 

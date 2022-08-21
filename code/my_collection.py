@@ -17,6 +17,9 @@ ndcgs = {}
 evaled = {}
 topks = {}
 
+warm_train_losses = {}
+warm_val_losses = {}
+
 for i in range(int(args.part_time)):
     if i==10:
         continue
@@ -61,6 +64,18 @@ for i in range(int(args.part_time)):
     with open(file_name, 'rb') as f:
         topks.update(pickle.load(f))
     #os.remove(file_name)
+
+    print(i, 'warm_train_losses')
+    file_name = '../result/{}/{}/warm_train_losses-{}.pkl'.format(args.dataset_name, args.save_name, i)
+    with open(file_name, 'rb') as f:
+        warm_train_losses.update(pickle.load(f))
+    #os.remove(file_name)
+
+    print(i, 'warm_val_losses')
+    file_name = '../result/{}/{}/warm_val_losses-{}.pkl'.format(args.dataset_name, args.save_name, i)
+    with open(file_name, 'rb') as f:
+        warm_train_losses.update(pickle.load(f))
+    #os.remove(file_name)
 ''''''
 f = open('../result/{}/{}/trainaccs.pkl'.format(args.dataset_name, args.save_name),'wb')
 pickle.dump(train_accs,f)
@@ -90,7 +105,15 @@ f = open('../result/{}/{}/topks.pkl'.format(args.dataset_name, args.save_name),'
 pickle.dump(topks,f)
 f.close()    
 
+f = open('../result/{}/{}/warm_train_losses.pkl'.format(args.dataset_name, args.save_name),'wb')
+pickle.dump(warm_train_losses,f)
+f.close() 
 
+f = open('../result/{}/{}/warm_val_losses.pkl'.format(args.dataset_name, args.save_name),'wb')
+pickle.dump(warm_val_losses,f)
+f.close() 
+
+'''
 for i in range(int(args.part_time)):
     file_name = '../result/{}/{}/trainaccs-{}.pkl'.format(args.dataset_name, args.save_name, i)
     os.remove(file_name)
@@ -112,3 +135,9 @@ for i in range(int(args.part_time)):
     
     file_name = '../result/{}/{}/topks-{}.pkl'.format(args.dataset_name, args.save_name, i)
     os.remove(file_name)
+
+    file_name = '../result/{}/{}/warm_train_losses-{}.pkl'.format(args.dataset_name, args.save_name, i)
+    os.remove(file_name)
+    file_name = '../result/{}/{}/warm_val_losses-{}.pkl'.format(args.dataset_name, args.save_name, i)
+    os.remove(file_name)
+'''

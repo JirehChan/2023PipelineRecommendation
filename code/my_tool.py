@@ -24,9 +24,15 @@ def parse_arg():
     parser.add_argument(
         '--warm_start', default='default', help='the path for the define of warm starters')
     parser.add_argument(
+        '--warm_trained', type=int, default=0, help='is the warm starter is trained')
+    parser.add_argument(
         '--bo_n_init', type=int, default=5, help='the number of pipelines for warm start')
     parser.add_argument(
         '--bo_n_iters', type=int, default=200, help='the number of pipelines for search')
+    parser.add_argument(
+        '--is_bayes', type=int, default=1)
+    parser.add_argument(
+        '--is_narrow', type=int, default=0)
 
     args, unparsed = parser.parse_known_args()
     return args
@@ -45,7 +51,7 @@ def setup_seed(seed):
 
 
 '''get data'''
-def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0):
+def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0, data_path='None', random_seed=0):
     """
     returns the train/test splits of the dataset as N x D matrices and the
     train/test dataset features used for warm-starting bo as D x F matrices.
@@ -74,52 +80,65 @@ def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0)
     dataset_ids = [int(dataset_ids[i]) for i in range(len(dataset_ids))]
     Y = df.values[:,1:].astype(np.float64)
 
+    if dataset_name == 'openml':
+        Y = Y*100.
+
     '''train / test'''
-    if fn_train_ix is None:
-        if dataset_name=='openml':
-            random_rank = np.random.permutation(dataset_ids)
-            n_train = int(len(dataset_ids)*0.8)
-            n_test = len(dataset_ids)-n_train
-            ids_train = []
-            ids_test = []
+    ids_train = None
+    ids_val = None
+    ids_test = None
+    if data_path=='None':
+        if fn_train_ix is None:
+            if dataset_name=='openml':
+                random_rank = np.random.permutation(dataset_ids)
+                n_train = int(len(dataset_ids)*0.8)
+                n_test = len(dataset_ids)-n_train
+                ids_train = []
+                ids_test = []
 
-            for i in random_rank:
-                Yi = Y[:, dataset_ids.index(i)]
+                for i in random_rank:
+                    Yi = Y[:, dataset_ids.index(i)]
 
-                if n_test>0 and len(Yi)-np.isnan(Yi).sum()>150:
-                    ids_test.append(i)
-                    n_test -=1
-                else:
-                    ids_train.append(i)
-            
-            ids_train = np.array(ids_train)
-            ids_test = np.array(ids_test)
+                    if n_test>0 and len(Yi)-np.isnan(Yi).sum()>50:
+                        ids_test.append(i)
+                        n_test -=1
+                    else:
+                        ids_train.append(i)
+                
+                ids_train = np.array(ids_train)
+                ids_test = np.array(ids_test)
 
+            else:
+                random_rank = np.random.permutation(dataset_ids)
+                ids_train = random_rank[:int(len(random_rank)*0.8)]
+                ids_test = random_rank[int(len(random_rank)*0.8):]
         else:
-            random_rank = np.random.permutation(dataset_ids)
-            ids_train = random_rank[:int(len(random_rank)*0.8)]
-            ids_test = random_rank[int(len(random_rank)*0.8):]
-    else:
-        ids_train = np.loadtxt(fn_train_ix).astype(int).tolist()
-        ids_test = np.loadtxt(fn_test_ix).astype(int).tolist()
-    
-    random_rank = np.random.permutation(ids_train)
-    ids_train = random_rank[:int(len(random_rank)*0.8)]
-    ids_val = random_rank[int(len(random_rank)*0.8):]
+            ids_train = np.loadtxt(fn_train_ix).astype(int).tolist()
+            ids_test = np.loadtxt(fn_test_ix).astype(int).tolist()
+        
+        random_rank = np.random.permutation(ids_train)
+        ids_train = random_rank[:int(len(random_rank)*0.8)]
+        ids_val = random_rank[int(len(random_rank)*0.8):]
 
-    np.save('../result/{}/ids_train.npy'.format(save_name), np.array(ids_train))
-    np.save('../result/{}/ids_val.npy'.format(save_name), np.array(ids_train))
-    np.save('../result/{}/ids_test.npy'.format(save_name), np.array(ids_test))
+        np.save('../result/{}/ids_train.npy'.format(save_name), np.array(ids_train))
+        np.save('../result/{}/ids_val.npy'.format(save_name), np.array(ids_val))
+        np.save('../result/{}/ids_test.npy'.format(save_name), np.array(ids_test))
+    else:
+        ids_train = np.load('../result/{}/ids_train.npy'.format(data_path))
+        ids_val = np.load('../result/{}/ids_val.npy'.format(data_path))
+        ids_test = np.load('../result/{}/ids_test.npy'.format(data_path))
 
     ix_train = [dataset_ids.index(i) for i in ids_train]
     ix_val = [dataset_ids.index(i) for i in ids_val]
     ix_test = [dataset_ids.index(i) for i in ids_test]
+
 
     Ytrain = Y[:, ix_train]
     Yval = Y[:, ix_val]
     Ytest = Y[:, ix_test]
 
     ''''''
+    setup_seed(random_seed)
     nan_num = np.isnan(Ytrain).sum()
     total_num = Ytrain.size
     target_num = int(total_num * nan_ratio)
