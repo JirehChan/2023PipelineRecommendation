@@ -1,0 +1,37 @@
+warm_starters = {
+
+    'random': mr.RandomRecommender(),
+    'rank-ar': mr.AverageRankRecommender(),
+    'pmf-l1': mr.L1Recommender(),
+
+    'clf-knn(1)': mr.KnnRecommender({'n_neighbors':1, 'weights':'distance'}),
+    'clf-knn(2)': mr.KnnRecommender({'n_neighbors':2, 'weights':'distance'}),
+    'clf-knn(3)': mr.KnnRecommender({'n_neighbors':3, 'weights':'distance'}),
+    'clf-knn(4)': mr.KnnRecommender({'n_neighbors':4, 'weights':'distance'}),
+    'clf-knn(5)': mr.KnnRecommender({'n_neighbors':5, 'weights':'distance'}),
+
+    'clf-rf(100, gini, True)': mr.RFRecommender({'n_estimators':100, 'criterion':'gini', 'bootstrap':True}),
+    'clf-rf(100, gini, False)': mr.RFRecommender({'n_estimators':100, 'criterion':'gini', 'bootstrap':False}),
+    'clf-rf(100, entropy, True)': mr.RFRecommender({'n_estimators':100, 'criterion':'entropy', 'bootstrap':True}),
+    'clf-rf(100, entropy, False)': mr.RFRecommender({'n_estimators':100, 'criterion':'entropy', 'bootstrap':False}),
+
+    'clf-nn(0.1, 20)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.1, 'n_epoch':200, 'batch_size':32, 'hidden_dim':20, 'save_path': '../model/80%-nn-1.pkl'}),
+    'clf-nn(0.01, 20)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.01, 'n_epoch':200, 'batch_size':32, 'hidden_dim':20, 'save_path': '../model/80%-nn-2.pkl'}),
+    'clf-nn(0.001, 20)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.001, 'n_epoch':200, 'batch_size':32, 'hidden_dim':20, 'save_path': '../model/80%-nn-3.pkl'}),
+    'clf-nn(0.1, 50)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.1, 'n_epoch':200, 'batch_size':32, 'hidden_dim':50, 'save_path': '../model/80%-nn-4.pkl'}),
+    'clf-nn(0.01, 50)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.01, 'n_epoch':200, 'batch_size':32, 'hidden_dim':50, 'save_path': '../model/80%-nn-5.pkl'}),
+    'clf-nn(0.001, 50)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.001, 'n_epoch':200, 'batch_size':32, 'hidden_dim':50, 'save_path': '../model/80%-nn-6.pkl'}),
+    'clf-nn(0.1, 100)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.1, 'n_epoch':200, 'batch_size':32, 'hidden_dim':100, 'save_path': '../model/80%-nn-7.pkl'}),
+    'clf-nn(0.01, 100)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.01, 'n_epoch':200, 'batch_size':32, 'hidden_dim':100, 'save_path': '../model/80%-nn-8.pkl'}),
+    'clf-nn(0.001, 100)': mr.NNRecommender({'input_dim': Ftrain.shape[1], 'is_print':False, 
+                'lr':0.001, 'n_epoch':200, 'batch_size':32, 'hidden_dim':100, 'save_path': '../model/80%-nn-9.pkl'}),
+
+    }

@@ -1,9 +1,11 @@
+import bo
 import torch
 import random
 import argparse
 import numpy as np
 import pandas as pd
 import numpy as np
+from utils import transform_forward, transform_backward
 
 '''load arguments'''
 def parse_arg():
@@ -11,6 +13,14 @@ def parse_arg():
 
     parser.add_argument(
         '--dataset_name', default='pmf', help='pmf, 110-classifiers, openml')
+    parser.add_argument(
+        '--save_path', default='default', help='the path to save result')
+    parser.add_argument(
+        '--warm_path', default='default', help='the path to warm starters setting')
+    parser.add_argument(
+        '--data_path', default='None', help='the path to save data')
+    
+        
     parser.add_argument(
         '--random_seed', type=int, default=0, help='for random seed')
     parser.add_argument(
@@ -51,7 +61,7 @@ def setup_seed(seed):
 
 
 '''get data'''
-def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0, data_path='None', random_seed=0):
+def get_data(dataset_name='pmf', pipeline_ixs=None, save_path=None, nan_ratio=0, data_path='None', random_seed=0):
     """
     returns the train/test splits of the dataset as N x D matrices and the
     train/test dataset features used for warm-starting bo as D x F matrices.
@@ -96,15 +106,17 @@ def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0,
                 ids_train = []
                 ids_test = []
 
+                my_nn = 0
                 for i in random_rank:
                     Yi = Y[:, dataset_ids.index(i)]
 
-                    if n_test>0 and len(Yi)-np.isnan(Yi).sum()>50:
+                    if n_test>0 and len(Yi)-np.isnan(Yi).sum()>261:
                         ids_test.append(i)
                         n_test -=1
+                        my_nn+=1
                     else:
                         ids_train.append(i)
-                
+
                 ids_train = np.array(ids_train)
                 ids_test = np.array(ids_test)
 
@@ -120,13 +132,13 @@ def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0,
         ids_train = random_rank[:int(len(random_rank)*0.8)]
         ids_val = random_rank[int(len(random_rank)*0.8):]
 
-        np.save('../result/{}/ids_train.npy'.format(save_name), np.array(ids_train))
-        np.save('../result/{}/ids_val.npy'.format(save_name), np.array(ids_val))
-        np.save('../result/{}/ids_test.npy'.format(save_name), np.array(ids_test))
+        np.save('../result/{}/{}/ids_train.npy'.format(dataset_name, save_path), np.array(ids_train))
+        np.save('../result/{}/{}/ids_val.npy'.format(dataset_name, save_path), np.array(ids_val))
+        np.save('../result/{}/{}/ids_test.npy'.format(dataset_name, save_path), np.array(ids_test))
     else:
-        ids_train = np.load('../result/{}/ids_train.npy'.format(data_path))
-        ids_val = np.load('../result/{}/ids_val.npy'.format(data_path))
-        ids_test = np.load('../result/{}/ids_test.npy'.format(data_path))
+        ids_train = np.load('../result/{}/{}/ids_train.npy'.format(dataset_name, data_path))
+        ids_val = np.load('../result/{}/{}/ids_val.npy'.format(dataset_name, data_path))
+        ids_test = np.load('../result/{}/{}/ids_test.npy'.format(dataset_name, data_path))
 
     ix_train = [dataset_ids.index(i) for i in ids_train]
     ix_val = [dataset_ids.index(i) for i in ids_val]
@@ -137,12 +149,12 @@ def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0,
     Yval = Y[:, ix_val]
     Ytest = Y[:, ix_test]
 
-    ''''''
     setup_seed(random_seed)
     nan_num = np.isnan(Ytrain).sum()
     total_num = Ytrain.size
     target_num = int(total_num * nan_ratio)
-    
+
+
     while nan_num < target_num:
         a = np.random.randint(Ytrain.shape[0])
         b = np.random.randint(Ytrain.shape[1])
@@ -153,7 +165,6 @@ def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0,
         
         Ytrain[a,b] = np.nan
         nan_num += 1
-    ''''''
 
     '''load dataset features'''
     df = pd.read_csv(fn_data_feats)
@@ -182,7 +193,8 @@ def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0,
     df = pd.read_json(fn_pipelines_feats)
     df = df.fillna(-1)
 
-    df.pop('id')
+    pipeline_names = df['id'].tolist()
+
     if dataset_name == 'pmf':
         df.pop('model')
         df.pop('pre-processor')
@@ -196,4 +208,282 @@ def get_data(dataset_name='pmf', pipeline_ixs=None, save_name=None, nan_ratio=0,
 
     FPipeline = df.values
 
-    return Ytrain, Yval, Ytest, Ftrain, Fval, Ftest, FtrainNorm, FvalNorm, FtestNorm, FPipeline
+    return Ytrain, Yval, Ytest, Ftrain, Fval, Ftest, FtrainNorm, FvalNorm, FtestNorm, FPipeline, pipeline_names
+
+
+'''warm_starter test'''
+def test_warmstarter(bo_n_init, Yt, Ft, do_print=False, warm_start='l1', 
+    warm_starter=None, is_narrow=0, narrow_list=None):
+
+    # warm start
+    ix_init = warm_starter.recommend(Ft)
+
+    accs = np.zeros([Yt.shape[1], bo_n_init])
+    best_accs = np.zeros([Yt.shape[1], bo_n_init])
+
+    for ind, (ixs, y_train) in enumerate(zip(ix_init, Yt.T)):
+        n_init = 0
+        best_acc = 0
+
+        for i in ixs:
+            if not np.isnan(y_train[i]):
+                if (is_narrow) and (i not in narrow_list):
+                    continue
+                accs[ind][n_init] = y_train[i]
+                
+                if best_acc<y_train[i]:
+                    best_acc = y_train[i]
+                best_accs[ind][n_init] = best_acc
+
+                n_init += 1
+
+                if bo_n_init==n_init:
+                    break
+                
+    return accs, best_accs, ix_init
+
+'''Bayesian Search'''
+def bo_search(m, bo_n_init, bo_n_iters, Ytrain, Ftrain, ftest, ytest,
+        do_print=False, warm_start='l1', warm_starter=None, pipeline_ixs=None,
+        is_narrow=0, narrow_list=None):
+    
+    preds = bo.BO(m.dim, m.kernel, bo.ei,
+                  variance=transform_forward(m.variance))
+    ix_evaled = []
+    ix_candidates = np.where(np.invert(np.isnan(ytest)))[0].tolist()
+    ybest_list = []
+
+    # warm start
+    ix_init = warm_starter.recommend(ftest)
+    n_init = 0
+    if is_narrow:
+        ix_init = [i for i in ix_init if i in narrow_list]
+    
+    for ix in ix_init:
+        if not np.isnan(ytest[ix]):
+            preds.add(m.X[ix], ytest[ix])
+            ix_evaled.append(ix)
+
+            ix_candidates.remove(ix)
+
+            yb = preds.ybest
+            ybest_list.append(yb)
+
+            if do_print:
+                print('Iter: %d, %g [%d], Best: %g' % (l, ytest[ix], ix, yb))
+            
+            n_init +=1
+            if n_init==bo_n_init:
+                break
+    
+    if len(ybest_list)==0:
+        ix_evaled.append(-1)
+        ybest_list.append(0)
+
+    while len(ybest_list)<bo_n_init:
+        ix_evaled.append(ix_evaled[-1])
+        ybest_list.append(ybest_list[-1])
+    
+    # Optimization
+    for l in range(bo_n_init, bo_n_iters):
+        if len(ix_candidates)==0:
+            ix_evaled.append(-1)
+            ybest_list.append(preds.ybest)
+            continue
+
+        i = preds.next(m.X[ix_candidates])
+
+        ix = ix_candidates[i]
+        preds.add(m.X[ix], ytest[ix])
+        ix_evaled.append(ix)
+        ix_candidates.remove(ix)
+        ybest_list.append(preds.ybest)
+
+        if do_print:
+            print('Iter: %d, %g [%d], Best: %g' \
+                                    % (l, ytest[ix], ix, preds.ybest))
+
+    return np.asarray(ybest_list), ix_evaled
+
+'''Random Search'''
+def random_search(bo_n_iters, ytest, speed=1, do_print=False, pipeline_ixs=None, ndcgk=[None],
+              is_narrow=0, narrow_list=None):
+    """
+    speed denotes how many random queries are performed per iteration.
+    """
+    
+    ix_evaled = []
+    ix_candidates = np.where(np.invert(np.isnan(ytest)))[0].tolist()
+    ybest_list = []
+    ndcg_list = []
+
+    ybest = np.nan
+    n_init = 0
+
+    for l in range(bo_n_iters):
+        for ll in range(speed):
+            if len(ix_candidates)==0:
+                ix_evaled.append(-1)
+                continue
+
+            random_rank = np.random.permutation(len(ix_candidates))
+
+            if is_narrow and n_init<5:
+                random_rank = [i for i in random_rank if random_rank[i] in narrow_list]
+                ix = ix_candidates[random_rank[0]]
+                if not np.isnan(ybest):
+                    if ytest[ix] > ybest:
+                        ybest = ytest[ix]
+                    ix_evaled.append(ix)
+                    ix_candidates.remove(ix)
+                    n_init+=1
+            else:
+                ix = ix_candidates[random_rank[0]]
+                
+                if np.isnan(ybest):
+                    ybest = ytest[ix]
+                else:
+                    if ytest[ix] > ybest:
+                        ybest = ytest[ix]
+
+                ix_evaled.append(ix)
+                ix_candidates.remove(ix)
+
+        ybest_list.append(ybest)
+
+        if do_print:
+            print('Iter: %d, %g [%d], Best: %g' % (l, ytest[ix], ix, ybest))
+
+    return np.asarray(ybest_list), ix_evaled
+
+
+'''Ours Search'''
+def ours_search(m, bo_n_init, bo_n_iters, Ytrain, Ftrain, ftest, ytest,
+        do_print=False, warm_start='l1', warm_starter=None, pipeline_ixs=None,
+        is_narrow=0, narrow_list=None):
+
+    ix_evaled = []
+    ix_candidates = np.where(np.invert(np.isnan(ytest)))[0].tolist()
+    ybest = 0
+    ybest_list = []
+
+    # warm start
+    ix_init, init_score = warm_starter.recommend_with_score(ftest)
+    n_init = 0
+    if is_narrow:
+        ix_init = [i for i in ix_init if i in narrow_list]
+    
+    for ix in ix_init:
+        if not np.isnan(ytest[ix]):
+            ix_evaled.append(ix)
+            ix_candidates.remove(ix)
+            
+            if ytest[ix]>ybest:
+                ybest = ytest[ix]
+            ybest_list.append(ybest)
+            
+            n_init +=1
+            if n_init==bo_n_iters:
+                break
+
+    while len(ybest_list)<bo_n_iters:
+        ix_evaled.append(ix_evaled[-1])
+        ybest_list.append(ybest_list[-1])
+    
+    return np.asarray(ybest_list), ix_evaled
+
+'''
+SMAC Search
+'''
+from smac.configspace import ConfigurationSpace
+from smac.scenario.scenario import Scenario
+from smac.facade.smac_hpo_facade import SMAC4HPO 
+#from smac.configspace import CategoricalHyperparameter, OrdinalHyperparameter
+from ConfigSpace import CategoricalHyperparameter, OrdinalHyperparameter
+from smac.utils.io.traj_logging import TrajLogger
+from smac.stats.stats import Stats
+
+def smac_search(m, bo_n_init, bo_n_iters, Ytrain, Ftrain, ftest, ytest,
+        do_print=False, warm_start='l1', warm_starter=None, pipeline_ixs=None,
+        is_narrow=0, narrow_list=None, pipeline_names=None):
+    ix_evaled = []
+    init_names = []
+    ix_candidates = np.where(np.invert(np.isnan(ytest)))[0].tolist()
+    all_candidates = ix_candidates.copy()
+    id_evaled = []
+    id_candidates = [str(i) for i in list(range(len(ix_candidates)))]
+    candidate_names = [pipeline_names[i] for i in ix_candidates]
+    ybest = 0
+    ybest_list = []
+
+    # warm start
+    ix_init = warm_starter.recommend(ftest)
+    n_init = 0
+    if is_narrow:
+        ix_init = [i for i in ix_init if i in narrow_list]
+    
+    for ix in ix_init:
+        if not np.isnan(ytest[ix]):
+            ix_evaled.append(ix)
+            init_names.append(pipeline_names[ix])
+            ix_candidates.remove(ix)
+            candidate_names.remove(pipeline_names[ix])
+            
+            #id = str(all_candidates.index(ix))
+            #id_evaled.append(id)
+            #id_candidates.remove(id)
+            
+            if ytest[ix]>ybest:
+                ybest = ytest[ix]
+            ybest_list.append(ybest)
+            
+            n_init +=1
+            if n_init==bo_n_init:
+                break
+    
+    # optimization
+    init_cs = ConfigurationSpace()
+    #init_ids = OrdinalHyperparameter('name', [str(i) for i in id_evaled], default_value=str(id_evaled[0]))
+    init_ids = OrdinalHyperparameter('name', init_names, default_value=init_names[0])
+    init_cs.add_hyperparameter(init_ids)
+
+    optim_cs = ConfigurationSpace()
+    #optim_ids = OrdinalHyperparameter('name', [str(i) for i in id_candidates], default_value=str(id_candidates[0]))
+    optim_ids = OrdinalHyperparameter('name', candidate_names, default_value=candidate_names[0])
+    optim_cs.add_hyperparameter(optim_ids)
+    scenario = Scenario({'run_obj':'quality', 'runcount-limit':bo_n_iters, 'cs':optim_cs, 'deterministic':'true',
+        'initial_incumbent':"DEFAULT"})
+
+    def cfg_ours(cfg):
+        #print(cfg['name'])
+        ix = pipeline_names.index(cfg['name'])
+        #id = int(cfg['names'])
+        #ix = all_candidates[int(cfg['name'])]
+        
+        ix_evaled.append(ix)
+        if ytest[ix]>ybest_list[-1]:
+            ybest_list.append(ytest[ix])
+        else:
+            ybest_list.append(ybest_list[-1])
+
+        return np.float32(ytest[ix])
+
+    init_confs = []
+    for name in init_names:
+        conf = init_cs.sample_configuration()
+        conf['name'] = name
+        init_confs.append(conf)
+    
+
+    smac = SMAC4HPO(scenario=scenario, rng=0, tae_runner=cfg_ours, 
+        smbo_kwargs={'min_samples_model':10},
+        initial_design_kwargs={'configs':init_confs, 'init_budget':bo_n_init}
+        )#initial_design_kwargs={"cs": init_cs, 'init_budget':100, 'ta_run_limit':100},)
+    
+    incumbent = smac.optimize()
+    
+    while len(ybest_list)<bo_n_iters:
+        ix_evaled.append(ix_evaled[-1])
+        ybest_list.append(ybest_list[-1])
+        
+    return np.asarray(ybest_list[bo_n_init:]), ix_evaled[bo_n_init:]

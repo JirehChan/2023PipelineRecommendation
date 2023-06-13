@@ -6,6 +6,41 @@ import numpy as np
 import scipy.stats as st
 
 """
+# Random
+"""
+class RandomRecommender:
+    def __init__(self):
+        return
+
+    def train(self, Ytrain, Ftrain):
+
+        self.model = np.arange(Ytrain.shape[0])
+        np.random.shuffle(self.model)
+    
+    def recommend(self, ftest, n_init=5):
+        if len(ftest.shape) == 1:
+            return self.model#[:n_init]
+        else:
+            return np.tile(self.model, (ftest.shape[0],1))
+
+"""
+# Average Rank
+use the average rank in train dataset to recommend
+"""
+class AverageRankRecommender:
+    def __init__(self):
+        return
+
+    def train(self, Ytrain, Ftrain):
+        self.model = np.argsort(-Ytrain.mean(axis=1))
+    
+    def recommend(self, ftest, n_init=5):
+        if len(ftest.shape) == 1:
+            return self.model#[:n_init]
+        else:
+            return np.tile(self.model, (ftest.shape[0],1))
+            
+"""
 # pmf methods
 use the l1 distance between datasets to recommend
 """
@@ -21,12 +56,14 @@ class L1Recommender:
         if len(ftest.shape)==1:
             dis = np.abs(self.Ftrain - ftest).sum(axis=1)
             ix_closest = np.argsort(dis)[:n_init]
+            
             ix_nonnan_pipelines \
                 = np.where(np.invert(np.isnan(self.Ytrain[:,ix_closest].sum(axis=1))))[0]
             ranks = np.apply_along_axis(st.rankdata, 0,
                                     self.Ytrain[ix_nonnan_pipelines[:,None],ix_closest])
             ave_pipeline_ranks = ranks.mean(axis=1)
             ix_init = ix_nonnan_pipelines[np.argsort(ave_pipeline_ranks)[::-1]]
+
             return ix_init
 
         else:
@@ -82,7 +119,7 @@ class myKNN:
 
 class KnnRecommender:
     def __init__(self, kwargs={}):
-        self.name = 'Knn'
+        self.name = 'CLF-kNN'
         self.model = myKNN(kwargs)
     
     def train(self, Ytrain, Ftrain):
@@ -106,6 +143,59 @@ class KnnRecommender:
         
         
         return ix_init#[:n_init]
+
+"""
+# RF method
+use the RandomForest Classifier to recommend
+"""
+from sklearn.ensemble import RandomForestClassifier
+class myRF:
+    def __init__(self, kwargs={}):
+        self.name = 'CLF-RF'
+        self.model = RandomForestClassifier(**kwargs)
+    
+    def train(self, x_train, y_train):
+        self.model.fit(x_train, y_train)
+    
+    def predict(self, x):
+        return self.model.predict(x)
+    
+    def predict_proba(self, x):
+        return self.model.predict_proba(x)
+    
+    def evaluate(self,  x, y):
+        return self.model.score(x, y)
+    
+    def get_classes(self):
+        return self.model.classes_
+
+
+class RFRecommender:
+    def __init__(self, kwargs={}):
+        self.name = 'CLF-RF'
+        self.model = myRF(kwargs)
+    
+    def train(self, Ytrain, Ftrain):
+        x = Ftrain
+        x[np.isnan(x)] = 0.
+        y = (-Ytrain).argsort(axis=0)[0]
+        x_train, x_val, y_train, y_val = train_test_split(x, y, test_size=0.2)
+        self.model.train(x_train, y_train)
+        return
+        print("train: {:.2f}%, val: {:.2f}%".format(\
+            self.model.evaluate(x_train, y_train)*100.,
+            self.model.evaluate(x_val, y_val)*100.))
+    
+    def recommend(self, ftest, n_init=5):
+        if len(ftest.shape) == 1:
+            recommend_rank = (-self.model.predict_proba([ftest])[0]).argsort()
+            ix_init = np.array([self.model.get_classes()[i] for i in recommend_rank])
+        else:
+            recommend_rank = (-self.model.predict_proba(ftest)).argsort(axis=1)
+            ix_init = np.apply_along_axis(lambda x: self.model.get_classes()[x], 0, recommend_rank)
+        
+        
+        return ix_init
 
 
 """
@@ -261,7 +351,7 @@ class myNN:
 
 class NNRecommender:
     def __init__(self, kwargs={}):
-        self.name = 'NN'
+        self.name = 'CLF-NN'
         self.kwargs = kwargs
         #self.model = myNN(kwargs)
     
@@ -301,8 +391,13 @@ use the PMM method to recommend
 import random
 
 # Lam Distance
-def lam_distance(x1, x2):
-  return torch.sigmoid(x1-x2).reshape(-1)
+def lam_distance(x1, x2, function='sigmoid'):
+  if function=='none':
+    return (x1-x2).reshape(-1)
+  elif function=='sigmoid':
+    return torch.sigmoid(x1-x2).reshape(-1)
+  else:
+    return torch.sigmoid(x1-x2).reshape(-1)
 
 # Embedding Net
 class LamNet(nn.Module):
@@ -313,9 +408,11 @@ class LamNet(nn.Module):
     self.hidden2 = nn.Linear(n_hidden, n_hidden)
     self.pred = nn.Linear(n_hidden, n_output)
 
+    self.bn1 = nn.BatchNorm1d(n_input)
     #self.dropout = nn.Dropout(p=0.2)
 
   def forward(self, x):
+    x = self.bn1(x)
     x = self.hidden1(x)
     x = F.relu(x)
     #x = self.dropout(x)
@@ -367,17 +464,22 @@ class SiameseNet(nn.Module):
 
 # Loss
 class ContrastiveLoss(nn.Module):
-  def __init__(self, margin=0.8):
+  def __init__(self, margin=0.8, function='sigmoid', distance_function='l1'):
     super(ContrastiveLoss, self).__init__()
     self.margin = margin
+    self.function = function
+    self.distance_function = distance_function
     self.eps = 1e-9
   
   def forward(self, out, target, size_average=True):
     out1, out2 = out
-    distance = lam_distance(out1, out2)
-    #losses = 0.5 * ((1 - target).float()*torch.pow(distance, 2) + 
-    #                target.float() * torch.pow(F.relu(self.margin - (distance + self.eps)), 2))
-    losses = 0.5 * ((1 - target).float()*distance + 
+    distance = lam_distance(out1, out2, self.function)
+    
+    if self.distance_function=='l2':
+        losses = 0.5 * ((1 - target).float()*torch.pow(distance, 2) + 
+                    target.float() * torch.pow(F.relu(self.margin - (distance + self.eps)), 2))
+    else:
+        losses = 0.5 * ((1 - target).float()*distance + 
                     target.float() * F.relu(self.margin - (distance + self.eps)))
     
     return losses.mean() if size_average else losses.num()
@@ -408,11 +510,12 @@ class PmmRecommender:
 
     def train(self, Ytrain, Ftrain, FPipeline):
         self.FPipeline = FPipeline
-
+        
         # create lam pairs
         pairs1, pairs2, labels = self._create_pairs(Ytrain, Ftrain, FPipeline, self.kwargs['total_pairs'], 
-                                [self.kwargs['pair_sd'], self.kwargs['pair_sp']], [self.kwargs['rank_s1'], self.kwargs['rank_s2']])
-
+                                [self.kwargs['pair_sd'], self.kwargs['pair_sp']], [self.kwargs['rank_s1'], self.kwargs['rank_s2']],
+                                self.kwargs['random_sample'])
+        
         # get dataloader
         train_data, val_data, test_data = self._split_lam_datasets(pairs1, pairs2, labels, part_ratio=0.8, val_ratio=0.2)
 
@@ -428,10 +531,10 @@ class PmmRecommender:
         my_lamNet = LamNet(n_input=self.kwargs['input_dim'], n_hidden=self.kwargs['hidden_dim'], n_output=self.kwargs['output_dim'])
         my_model = SiameseNet(my_lamNet)
         my_optimizer = torch.optim.SGD(my_model.parameters(), lr=self.kwargs['lr'], momentum=0.9, weight_decay=0.0001)
-        my_criterion = ContrastiveLoss(self.kwargs['margin'])
+        my_criterion = ContrastiveLoss(self.kwargs['margin'], self.kwargs['function'], self.kwargs['distance'])
         
         # Train Model
-        self.model, lam_train_acc, lam_val_acc, lam_test_acc, lam_epoch = \
+        self.model, lam_train_acc, lam_val_acc, lam_test_acc, lam_epoch, train_losses, val_losses = \
             self._train_lam_model(train_iter, val_iter, test_iter, \
                 my_model, my_optimizer, my_criterion, \
                 n_epoch=self.kwargs['n_epoch'], batch_size=self.kwargs['batch_size'], \
@@ -450,6 +553,8 @@ class PmmRecommender:
         print("train: {:.2f}%, val: {:.2f}%".format(\
             self.model.evaluate(x_train, y_train, FPipeline),
             self.model.evaluate(x_val, y_val, FPipeline)))
+        
+        return train_losses, val_losses
 
 
     def recommend(self, ftest, n_init=5, FPipeline=None):
@@ -692,7 +797,7 @@ class PmmRecommender:
                 my_optimizer.step()
 
                 out1, out2 = out
-                distance = lam_distance(out1, out2)
+                distance = lam_distance(out1, out2, self.kwargs['function'])
                 correct_num += (y==(distance>=0.8).float()).sum().item()
 
             return train_loss / train_num, correct_num / train_num*100
@@ -713,7 +818,7 @@ class PmmRecommender:
                     test_loss += loss.item()*len(y)
 
                     out1, out2 = out
-                    distance = lam_distance(out1, out2)
+                    distance = lam_distance(out1, out2, self.kwargs['function'])
                     correct_num += (y==(distance>=0.8).float()).sum().item()
             
             return test_loss/test_num, correct_num/test_num*100
@@ -779,10 +884,10 @@ class LamNetSeperate(nn.Module):
     self.hidden1 = nn.Linear(2*n_hidden, n_hidden)
     self.pred = nn.Linear(n_hidden, n_output)
 
-    #self.bn1 = nn.BatchNorm1d(n_input1+n_input2)
+    self.bn1 = nn.BatchNorm1d(n_input1+n_input2)
 
   def forward(self, x):
-    #x = self.bn1(x)
+    x = self.bn1(x)
     x1 = x[:,:self.n_input1]
     x2 = x[:,self.n_input1:]
     #x1, x2 = x.split(self.n_input1, dim=1)
@@ -818,7 +923,7 @@ class BalancedPmmRecommender(PmmRecommender):
 
         kwargs = {'num_workers':1, 'pin_memory':True} if self.kwargs['cuda'] else {}
         train_iter = torch.utils.data.DataLoader(train_data, \
-                            batch_size=self.kwargs['batch_size'], shuffle=True, **kwargs)
+                            batch_size=self.kwargs['batch_size'], shuffle=True, drop_last=True, **kwargs)#drop_last=True
         val_iter = torch.utils.data.DataLoader(val_data, \
                             batch_size=self.kwargs['batch_size'], shuffle=True, **kwargs)
         test_iter  = torch.utils.data.DataLoader(test_data, \
@@ -831,7 +936,7 @@ class BalancedPmmRecommender(PmmRecommender):
                         n_output=self.kwargs['output_dim'])
         my_model = SiameseNet(my_lamNet)
         my_optimizer = torch.optim.SGD(my_model.parameters(), lr=self.kwargs['lr'], momentum=0.9, weight_decay=0.0001)
-        my_criterion = ContrastiveLoss(self.kwargs['margin'])
+        my_criterion = ContrastiveLoss(self.kwargs['margin'], self.kwargs['function'], self.kwargs['distance'])
         
         # Train Model
         self.model, lam_train_acc, lam_val_acc, lam_test_acc, lam_epoch, train_losses, val_losses = \
@@ -917,11 +1022,13 @@ class myNNR:
 
         kwargs = {'num_workers':1, 'pin_memory':True} if self.cuda else {}
         train_iter = torch.utils.data.DataLoader(train_data, batch_size=self.batch_size, shuffle=True, drop_last=True, **kwargs)
-        val_iter = torch.utils.data.DataLoader(val_data, batch_size=self.batch_size, shuffle=False, **kwargs)
+        val_iter = torch.utils.data.DataLoader(val_data, batch_size=self.batch_size, shuffle=False, drop_last=True, **kwargs)
 
         # Train
         best_loss = 10000000
         best_epoch = 0
+        torch.save(self.model, self.save_path)
+
         for epoch in range(self.n_epoch):
             train_loss = self._train_func(train_iter)
             val_loss = self._test_func(val_iter)
@@ -1057,5 +1164,104 @@ class RegressorRecommender:
             recommend_rank = (-self.model.predict_proba(ftest, self.FPipeline)).argsort(axis=1)
         ix_init = recommend_rank
         #ix_init = self.enc.inverse_transform(recommend_rank.reshape(-1)).reshape(recommend_rank.shape)
+
+        return ix_init#[:n_init]
+
+
+"""
+AdaBoostRegressorRecommender
+"""
+from sklearn.ensemble import AdaBoostRegressor
+
+class myABR:
+    def __init__(self, n_estimators=50, lr=0.1, loss='linear', random_state=None, \
+        is_print=False, val_size=0.2, save_path='../model/reg-ab.pkl'):
+        self.model = AdaBoostRegressor(
+            n_estimators=n_estimators, 
+            learning_rate=lr,
+            loss=loss)
+        self.is_print = is_print
+        self.val_size = 0.2
+        self.save_path = save_path
+
+    def train(self, x, y):
+        self.model.fit(x,y)
+
+    def predict(self, x):
+        x = np.mat(x)
+        out = self.model.predict(x)
+        return out
+    
+    def _predict_proba(self, x, FPipeline):
+        x = np.expand_dims(x, 0).repeat(FPipeline.shape[0], axis=0)
+        x = np.concatenate((x,FPipeline), axis=1)
+
+        outs = self.model.predict(x)
+        return outs.reshape(-1)
+
+    def predict_proba(self, xs, FPipeline):
+        y = []
+        for x in xs:
+            y.append(self._predict_proba(x, FPipeline).tolist())
+        
+        return np.array(y)
+
+    def evaluate(self, x, y, FPipeline):
+        outs = self.predict_proba(x, FPipeline)
+
+        return (outs.argmax(1)==y).sum().item()/len(y)*100.
+
+
+class AdaBoostRegressorRecommender:
+    def __init__(self, kwargs={}):
+        self.name = 'AdaBoostRegressor'
+        self.kwargs = kwargs
+        #self.model = myNN(kwargs)
+    
+    def train(self, Ytrain, Ftrain, FPipeline):
+        self.FPipeline = FPipeline
+
+        x_datas = Ftrain
+        x_datas[np.isnan(x_datas)] = 0.
+        x = None
+
+        for x_pipe in FPipeline:
+            _x = np.expand_dims(x_pipe, 0).repeat(x_datas.shape[0], axis=0)
+            _x = np.concatenate((x_datas, _x), axis=1)
+            if x is None:
+                x = _x
+            else:
+                x = np.concatenate((x, _x), axis=0)
+        
+        y = Ytrain.reshape(-1)
+        nonan_ix = np.where(np.invert(np.isnan(y)))
+
+        x = x[nonan_ix]
+        y = y[nonan_ix]
+        x_train, x_val, y_train, y_val = train_test_split(x, y, test_size=0.2)
+
+        self.model = myABR(**self.kwargs)
+        self.model.train(x_train, y_train)
+
+        x = Ftrain
+        x[np.isnan(x)] = 0.
+
+        y = (-Ytrain).argsort(axis=0)[0]
+        #self.enc = preprocessing.LabelEncoder()
+        #y = self.enc.fit_transform(y)
+
+        x_train, x_val, y_train, y_val = train_test_split(x, y, test_size=0.2)
+        
+        train_acc = self.model.evaluate(x_train, y_train, FPipeline)
+        val_acc = self.model.evaluate(x_val, y_val, FPipeline)
+        print("train: {:.2f}%, val: {:.2f}%".format(\
+            train_acc, val_acc))
+    
+    def recommend(self, ftest, n_init=5):
+        if len(ftest.shape)==1:
+            recommend_rank = (-self.model.predict_proba([ftest], self.FPipeline)[0]).argsort()
+        else:
+            recommend_rank = (-self.model.predict_proba(ftest, self.FPipeline)).argsort(axis=1)
+        ix_init = recommend_rank
 
         return ix_init#[:n_init]
