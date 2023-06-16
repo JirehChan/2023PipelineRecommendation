@@ -1,12 +1,12 @@
 # 2023_Pipeline_Recommendation
 
-## code
+## codes
 
-- bo.py, gplvm.py, kernels.py, plotting.py, utils.py: the code for PMF method (from https://github.com/rsheth80/pmf-automl)
-- my_main.py: the main run code
-- my_recommends.py: whole the pipeline recommender implement code
-- my_tool.py: the code for load dataset, write log, bayesian process, etc.
-- my_postprocessing.py: the code for the final run
+- my_main.py: the main code for running
+- my_recommends.py: implementation of pipeline selection for our method and baselines 
+- my_tool.py: codes for dataset loading, log writting, bayesian process, etc.
+- my_postprocessing.py: codes for the final run
+- bo.py, gplvm.py, kernels.py, plotting.py, utils.py: the codes for PMF method (from https://github.com/rsheth80/pmf-automl)
 
 ## data
 
